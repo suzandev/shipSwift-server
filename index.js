@@ -28,7 +28,7 @@ async function run() {
     const db = client.db("parcelDB");
     const parcelCollection = db.collection("parcels");
 
-    // ✅ Get All Parcels (existing)
+    // ✅ Get All Parcels
     app.get("/parcels", async (req, res) => {
       try {
         const parcels = await parcelCollection.find().toArray();
@@ -38,13 +38,12 @@ async function run() {
       }
     });
 
-    // ✅ Create Parcel (UPDATED 🔥)
+    // ✅ Create Parcel
     app.post("/parcels", async (req, res) => {
       try {
         const parcel = req.body;
 
-        // 🔥 Add extra fields (IMPORTANT)
-        parcel.created_by = parcel.userEmail; // or from auth later
+        parcel.created_by = parcel.userEmail;
         parcel.creation_date = new Date();
         parcel.parcelStatus = "pending";
         parcel.paymentStatus = "unpaid";
@@ -56,7 +55,7 @@ async function run() {
       }
     });
 
-    // ✅ 🔥 NEW API: Get Parcels by User Email (Latest First)
+    // ✅ Get User Parcels (latest first)
     app.get("/parcels/user", async (req, res) => {
       try {
         const email = req.query.email;
@@ -65,11 +64,9 @@ async function run() {
           return res.status(400).send({ error: "Email is required" });
         }
 
-        const query = { created_by: email };
-
         const parcels = await parcelCollection
-          .find(query)
-          .sort({ creation_date: -1 }) // 🔥 latest first
+          .find({ created_by: email })
+          .sort({ creation_date: -1 })
           .toArray();
 
         res.send(parcels);
@@ -78,10 +75,51 @@ async function run() {
       }
     });
 
+    // 🚀 ✅ FIXED: Parcel Stats API (THIS WAS MISSING)
+    app.get("/parcels/stats", async (req, res) => {
+      try {
+        const email = req.query.email;
+
+        if (!email) {
+          return res.status(400).send({ error: "Email is required" });
+        }
+
+        const statsData = await parcelCollection
+          .aggregate([
+            {
+              $match: { created_by: email },
+            },
+            {
+              $group: {
+                _id: "$parcelStatus",
+                count: { $sum: 1 },
+              },
+            },
+          ])
+          .toArray();
+
+        const stats = {
+          pending: 0,
+          shipped: 0,
+          delivered: 0,
+        };
+
+        statsData.forEach((item) => {
+          if (item._id === "pending") stats.pending = item.count;
+          if (item._id === "shipped") stats.shipped = item.count;
+          if (item._id === "delivered") stats.delivered = item.count;
+        });
+
+        res.send(stats);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch stats" });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
     console.log("✅ Connected to MongoDB");
   } finally {
-    // keep connection alive
+    // keep alive
   }
 }
 
