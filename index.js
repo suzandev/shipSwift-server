@@ -3,19 +3,16 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 
-// Load environment variables from .env file
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.on5po.mongodb.net/?appName=Cluster0`;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -26,12 +23,12 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
-    const db = client.db("parcelDB"); // database name
-    const parcelCollection = db.collection("parcels"); // collection
+    const db = client.db("parcelDB");
+    const parcelCollection = db.collection("parcels");
 
+    // ✅ Get All Parcels (existing)
     app.get("/parcels", async (req, res) => {
       try {
         const parcels = await parcelCollection.find().toArray();
@@ -41,12 +38,16 @@ async function run() {
       }
     });
 
+    // ✅ Create Parcel (UPDATED 🔥)
     app.post("/parcels", async (req, res) => {
       try {
         const parcel = req.body;
 
-        // // Add extra fields
-        // parcel.createdAt = new Date();
+        // 🔥 Add extra fields (IMPORTANT)
+        parcel.created_by = parcel.userEmail; // or from auth later
+        parcel.creation_date = new Date();
+        parcel.parcelStatus = "pending";
+        parcel.paymentStatus = "unpaid";
 
         const result = await parcelCollection.insertOne(parcel);
         res.send(result);
@@ -55,24 +56,41 @@ async function run() {
       }
     });
 
-    // Send a ping to confirm a successful connection
+    // ✅ 🔥 NEW API: Get Parcels by User Email (Latest First)
+    app.get("/parcels/user", async (req, res) => {
+      try {
+        const email = req.query.email;
+
+        if (!email) {
+          return res.status(400).send({ error: "Email is required" });
+        }
+
+        const query = { created_by: email };
+
+        const parcels = await parcelCollection
+          .find(query)
+          .sort({ creation_date: -1 }) // 🔥 latest first
+          .toArray();
+
+        res.send(parcels);
+      } catch (error) {
+        res.status(500).send({ error: "Failed to fetch user parcels" });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
-    );
+    console.log("✅ Connected to MongoDB");
   } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    // keep connection alive
   }
 }
+
 run().catch(console.dir);
 
-// Sample route
 app.get("/", (req, res) => {
   res.send("parcel Server Is Running");
 });
 
-// Start The Server
 app.listen(port, () => {
-  console.log(`Server is listening on port ${port}`);
+  console.log(`🚀 Server running on port ${port}`);
 });
