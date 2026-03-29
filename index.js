@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
 
@@ -75,7 +75,7 @@ async function run() {
       }
     });
 
-    // 🚀 ✅ FIXED: Parcel Stats API (THIS WAS MISSING)
+    // 🚀 Parcel Stats API
     app.get("/parcels/stats", async (req, res) => {
       try {
         const email = req.query.email;
@@ -86,9 +86,7 @@ async function run() {
 
         const statsData = await parcelCollection
           .aggregate([
-            {
-              $match: { created_by: email },
-            },
+            { $match: { created_by: email } },
             {
               $group: {
                 _id: "$parcelStatus",
@@ -113,6 +111,38 @@ async function run() {
         res.send(stats);
       } catch (error) {
         res.status(500).send({ error: "Failed to fetch stats" });
+      }
+    });
+
+    // ✅ DELETE Parcel
+    app.delete("/parcels/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const email = req.query.email; // optional security
+
+        if (!id) {
+          return res.status(400).send({ error: "Parcel ID is required" });
+        }
+
+        // 🔒 Secure delete (only owner can delete)
+        const query = email
+          ? { _id: new ObjectId(id), created_by: email }
+          : { _id: new ObjectId(id) };
+
+        const result = await parcelCollection.deleteOne(query);
+
+        if (result.deletedCount === 0) {
+          return res
+            .status(404)
+            .send({ error: "Parcel not found or unauthorized" });
+        }
+
+        res.send({
+          success: true,
+          message: "Parcel deleted successfully",
+        });
+      } catch (error) {
+        res.status(500).send({ error: "Failed to delete parcel" });
       }
     });
 
