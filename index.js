@@ -212,20 +212,42 @@ async function run() {
       try {
         const { parcelId } = req.body;
 
+        console.log("Received parcelId:", parcelId);
+
         const parcel = await parcelCollection.findOne({
           _id: new ObjectId(parcelId),
         });
+
+        console.log("Parcel from DB:", parcel);
 
         if (!parcel) {
           return res.status(404).send({ error: "Parcel not found" });
         }
 
-        // 🔥 ALWAYS USE DB PRICE
-        const amount = parcel.price || 0;
+        // 🔥 FIX: ensure amount always exists
+        let amount = parcel.price;
+
+        if (!amount) {
+          if (parcel.parcelType === "document") {
+            amount = 60;
+          } else {
+            const weight = parcel.weight || 0;
+            amount = weight <= 1 ? 80 : 80 + (weight - 1) * 20;
+          }
+        }
+
+        console.log("Final amount:", amount);
+
+        if (!amount || amount <= 0) {
+          return res.status(400).send({ error: "Invalid amount" });
+        }
+
+        // 🔥 Stripe does NOT support BDT → convert to USD
+        const amountInUSD = amount / 110;
 
         const paymentIntent = await stripe.paymentIntents.create({
-          amount: amount * 100,
-          currency: "bdt",
+          amount: Math.round(amountInUSD * 100),
+          currency: "usd",
           payment_method_types: ["card"],
         });
 
@@ -233,7 +255,8 @@ async function run() {
           clientSecret: paymentIntent.client_secret,
         });
       } catch (error) {
-        res.status(500).send({ error: "Failed to create payment intent" });
+        console.error("🔥 Stripe Error:", error.message);
+        res.status(500).send({ error: error.message });
       }
     });
 
