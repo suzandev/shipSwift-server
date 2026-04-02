@@ -40,6 +40,12 @@ async function run() {
     const db = client.db("parcelDB");
     const parcelCollection = db.collection("parcels");
 
+    // 🔥 NEW COLLECTION
+    const trackingCollection = db.collection("tracking");
+
+    // 🔥 INDEX (IMPORTANT)
+    await trackingCollection.createIndex({ trackingNumber: 1 });
+
     // =========================
     // GET ALL PARCELS
     // =========================
@@ -53,7 +59,7 @@ async function run() {
     });
 
     // =========================
-    // CREATE PARCEL
+    // CREATE PARCEL + TRACKING
     // =========================
     app.post("/parcels", async (req, res) => {
       try {
@@ -64,7 +70,15 @@ async function run() {
         parcel.parcelStatus = "pending";
         parcel.paymentStatus = "unpaid";
 
-        // 🔥 PRICE CALCULATION
+        // 🔥 TRACKING NUMBER GENERATE
+        const trackingNumber = `SWIFT-${Math.random()
+          .toString(36)
+          .substring(2, 8)
+          .toUpperCase()}`;
+
+        parcel.trackingNumber = trackingNumber;
+
+        // 🔥 PRICE
         let amount = 0;
 
         if (parcel.parcelType === "document") {
@@ -77,9 +91,72 @@ async function run() {
         parcel.price = amount;
 
         const result = await parcelCollection.insertOne(parcel);
+
+        // 🔥 INITIAL TRACK ENTRY
+        await trackingCollection.insertOne({
+          trackingNumber,
+          parcelId: result.insertedId,
+          status: "Pending",
+          message: "Parcel created",
+          location: parcel.senderCenter || "Warehouse",
+          time: new Date(),
+        });
+
         res.send(result);
       } catch (error) {
         res.status(500).send({ error: "Failed to create parcel" });
+      }
+    });
+
+    // =========================
+    // ADD TRACK UPDATE
+    // =========================
+    app.post("/tracking", async (req, res) => {
+      try {
+        const { trackingNumber, status, message, location } = req.body;
+
+        const result = await trackingCollection.insertOne({
+          trackingNumber,
+          status,
+          message,
+          location,
+          time: new Date(),
+        });
+        // 🔥 2. UPDATE PARCEL STATUS
+        await parcelCollection.updateOne(
+          { trackingNumber },
+          {
+            $set: {
+              parcelStatus: status.toLowerCase(),
+            },
+          },
+        );
+
+        res.send(result);
+      } catch {
+        res.status(500).send({ error: "Failed to add tracking update" });
+      }
+    });
+
+    // =========================
+    // GET TRACKING HISTORY
+    // =========================
+    app.get("/tracking/:trackingNumber", async (req, res) => {
+      try {
+        const trackingNumber = req.params.trackingNumber.toUpperCase();
+
+        const updates = await trackingCollection
+          .find({ trackingNumber })
+          .sort({ time: 1 })
+          .toArray();
+
+        if (!updates.length) {
+          return res.status(404).send({ error: "Tracking not found" });
+        }
+
+        res.send(updates);
+      } catch {
+        res.status(500).send({ error: "Failed to fetch tracking" });
       }
     });
 
@@ -112,10 +189,6 @@ async function run() {
       try {
         const email = req.query.email;
 
-        if (!email) {
-          return res.status(400).send({ error: "Email is required" });
-        }
-
         const statsData = await parcelCollection
           .aggregate([
             { $match: { created_by: email } },
@@ -128,11 +201,7 @@ async function run() {
           ])
           .toArray();
 
-        const stats = {
-          pending: 0,
-          shipped: 0,
-          delivered: 0,
-        };
+        const stats = { pending: 0, shipped: 0, delivered: 0 };
 
         statsData.forEach((item) => {
           if (item._id === "pending") stats.pending = item.count;
@@ -147,79 +216,14 @@ async function run() {
     });
 
     // =========================
-    // GET SINGLE PARCEL
-    // =========================
-    app.get("/parcels/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-
-        const parcel = await parcelCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!parcel) {
-          return res.status(404).send({ error: "Parcel not found" });
-        }
-
-        if (!parcel.price) {
-          let amount = 0;
-
-          if (parcel.parcelType === "document") {
-            amount = 60;
-          } else {
-            const weight = parcel.weight || 0;
-            amount = weight <= 1 ? 80 : 80 + (weight - 1) * 20;
-          }
-
-          parcel.price = amount;
-        }
-
-        res.send(parcel);
-      } catch {
-        res.status(500).send({ error: "Failed to fetch parcel" });
-      }
-    });
-
-    // =========================
-    // DELETE PARCEL
-    // =========================
-    app.delete("/parcels/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const email = req.query.email;
-
-        const query = email
-          ? { _id: new ObjectId(id), created_by: email }
-          : { _id: new ObjectId(id) };
-
-        const result = await parcelCollection.deleteOne(query);
-
-        if (result.deletedCount === 0) {
-          return res.status(404).send({ error: "Parcel not found" });
-        }
-
-        res.send({ success: true });
-      } catch {
-        res.status(500).send({ error: "Failed to delete parcel" });
-      }
-    });
-
-    // =========================
-    // GET PAYMENT HISTORY
+    // PAYMENT HISTORY
     // =========================
     app.get("/payments", async (req, res) => {
       try {
         const email = req.query.email;
 
-        if (!email) {
-          return res.status(400).send({ error: "Email is required" });
-        }
-
         const payments = await parcelCollection
-          .find({
-            created_by: email,
-            paymentStatus: "paid",
-          })
+          .find({ created_by: email, paymentStatus: "paid" })
           .sort({ paid_at: -1 })
           .toArray();
 
@@ -230,42 +234,17 @@ async function run() {
     });
 
     // =========================
-    // 💳 STRIPE PAYMENT INTENT
+    // STRIPE PAYMENT INTENT
     // =========================
     app.post("/create-payment-intent", async (req, res) => {
       try {
         const { parcelId } = req.body;
 
-        console.log("Received parcelId:", parcelId);
-
         const parcel = await parcelCollection.findOne({
           _id: new ObjectId(parcelId),
         });
 
-        console.log("Parcel from DB:", parcel);
-
-        if (!parcel) {
-          return res.status(404).send({ error: "Parcel not found" });
-        }
-
-        let amount = parcel.price;
-
-        if (!amount) {
-          if (parcel.parcelType === "document") {
-            amount = 60;
-          } else {
-            const weight = parcel.weight || 0;
-            amount = weight <= 1 ? 80 : 80 + (weight - 1) * 20;
-          }
-        }
-
-        console.log("Final amount:", amount);
-
-        if (!amount || amount <= 0) {
-          return res.status(400).send({ error: "Invalid amount" });
-        }
-
-        //  BDT → convert to USD
+        let amount = parcel.price || 60;
         const amountInUSD = amount / 110;
 
         const paymentIntent = await stripe.paymentIntents.create({
@@ -274,11 +253,8 @@ async function run() {
           payment_method_types: ["card"],
         });
 
-        res.send({
-          clientSecret: paymentIntent.client_secret,
-        });
+        res.send({ clientSecret: paymentIntent.client_secret });
       } catch (error) {
-        console.error("🔥 Stripe Error:", error.message);
         res.status(500).send({ error: error.message });
       }
     });
@@ -291,19 +267,11 @@ async function run() {
         const id = req.params.id;
         const { email, transactionId } = req.body;
 
-        if (!email) {
-          return res.status(400).send({ error: "Email required" });
-        }
-
         const result = await parcelCollection.updateOne(
-          {
-            _id: new ObjectId(id),
-            created_by: email,
-          },
+          { _id: new ObjectId(id), created_by: email },
           {
             $set: {
               paymentStatus: "paid",
-              paid_at_string: new Date().toISOString(),
               paid_at: new Date(),
               transactionId,
             },
@@ -316,28 +284,17 @@ async function run() {
       }
     });
 
-    // =========================
-    // DB CHECK
-    // =========================
-    await client.db("admin").command({ ping: 1 });
     console.log("✅ MongoDB Connected");
   } finally {
-    // keep alive
   }
 }
 
 run().catch(console.dir);
 
-// =========================
-// ROOT
-// =========================
 app.get("/", (req, res) => {
   res.send("🚀 Parcel Server Running");
 });
 
-// =========================
-// START SERVER
-// =========================
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
 });
