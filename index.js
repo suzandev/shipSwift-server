@@ -6,7 +6,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 dotenv.config();
 
 // =========================
-// STRIPE INIT (FIXED)
+// STRIPE INIT
 // =========================
 if (!process.env.STRIPE_SECRET_KEY) {
   console.error("❌ STRIPE_SECRET_KEY is missing in .env");
@@ -53,7 +53,7 @@ async function run() {
     });
 
     // =========================
-    // CREATE PARCEL (PRICE FIXED HERE)
+    // CREATE PARCEL
     // =========================
     app.post("/parcels", async (req, res) => {
       try {
@@ -64,7 +64,7 @@ async function run() {
         parcel.parcelStatus = "pending";
         parcel.paymentStatus = "unpaid";
 
-        // 🔥 PRICE CALCULATION (FIXED)
+        // 🔥 PRICE CALCULATION
         let amount = 0;
 
         if (parcel.parcelType === "document") {
@@ -147,7 +147,7 @@ async function run() {
     });
 
     // =========================
-    // GET SINGLE PARCEL (PRICE SAFETY FIX)
+    // GET SINGLE PARCEL
     // =========================
     app.get("/parcels/:id", async (req, res) => {
       try {
@@ -161,7 +161,6 @@ async function run() {
           return res.status(404).send({ error: "Parcel not found" });
         }
 
-        // 🔥 FIX OLD DATA (ENSURE PRICE ALWAYS EXISTS)
         if (!parcel.price) {
           let amount = 0;
 
@@ -206,7 +205,32 @@ async function run() {
     });
 
     // =========================
-    // 💳 STRIPE PAYMENT INTENT (FIXED)
+    // GET PAYMENT HISTORY
+    // =========================
+    app.get("/payments", async (req, res) => {
+      try {
+        const email = req.query.email;
+
+        if (!email) {
+          return res.status(400).send({ error: "Email is required" });
+        }
+
+        const payments = await parcelCollection
+          .find({
+            created_by: email,
+            paymentStatus: "paid",
+          })
+          .sort({ paid_at: -1 })
+          .toArray();
+
+        res.send(payments);
+      } catch {
+        res.status(500).send({ error: "Failed to fetch payments" });
+      }
+    });
+
+    // =========================
+    // 💳 STRIPE PAYMENT INTENT
     // =========================
     app.post("/create-payment-intent", async (req, res) => {
       try {
@@ -224,7 +248,6 @@ async function run() {
           return res.status(404).send({ error: "Parcel not found" });
         }
 
-        // 🔥 FIX: ensure amount always exists
         let amount = parcel.price;
 
         if (!amount) {
@@ -242,7 +265,7 @@ async function run() {
           return res.status(400).send({ error: "Invalid amount" });
         }
 
-        // 🔥 Stripe does NOT support BDT → convert to USD
+        //  BDT → convert to USD
         const amountInUSD = amount / 110;
 
         const paymentIntent = await stripe.paymentIntents.create({
@@ -261,7 +284,7 @@ async function run() {
     });
 
     // =========================
-    // PAYMENT UPDATE (SECURED FIXED)
+    // PAYMENT UPDATE
     // =========================
     app.patch("/parcels/payment/:id", async (req, res) => {
       try {
@@ -280,6 +303,7 @@ async function run() {
           {
             $set: {
               paymentStatus: "paid",
+              paid_at_string: new Date().toISOString(),
               paid_at: new Date(),
               transactionId,
             },
